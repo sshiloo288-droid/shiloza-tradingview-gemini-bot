@@ -11,17 +11,23 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# אתחול לקוח Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# רשימת מודלים נתמכים בסדר עדיפויות (כולל המודל העדכני ביותר)
+# רשימת מודלים נתמכים לניסיון לפי סדר עדיפויות
 CANDIDATE_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-2.5-flash",
     "gemini-2.0-flash",
-    "gemini-1.5-flash"
+    "gemini-2.0-flash-exp",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro"
 ]
 
 def send_telegram_message(text: str):
+    """שליחת הודעה לטלגרם עם מנגנון הגנה לשגיאות עיצוב"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Missing Telegram credentials")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -29,7 +35,11 @@ def send_telegram_message(text: str):
         "parse_mode": "Markdown"
     }
     try:
-        requests.post(url, json=payload, timeout=10)
+        res = requests.post(url, json=payload, timeout=10)
+        # אם יש שגיאת תיוג ב-Markdown, נסה לשלוח כטקסט נקי
+        if not res.ok:
+            payload.pop("parse_mode", None)
+            requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Error sending Telegram message: {e}")
 
@@ -70,9 +80,10 @@ async def tradingview_webhook(request: Request):
     response_text = None
     last_exception = None
 
-    # ניסיון אוטומטי מול רשימת המודלים עד להצלחה
+    # מנגנון ניסיון אוטומטי מול רשימת המודלים עד להצלחה
     for model_name in CANDIDATE_MODELS:
         try:
+            print(f"Attempting generation with model: {model_name}")
             response = client.models.generate_content(
                 model=model_name,
                 contents=contents,
@@ -81,14 +92,15 @@ async def tradingview_webhook(request: Request):
                     temperature=0.2
                 )
             )
-            response_text = response.text
-            break
+            if response and response.text:
+                response_text = response.text
+                break
         except Exception as e:
             print(f"Failed with model {model_name}: {e}")
             last_exception = e
 
     if response_text:
-        send_telegram_message(f"📊 **סקירת שוק אוטומטית - {ticker}**\n\n{response_text}")
+        send_telegram_message(f"📊 *סקירת שוק אוטומטית - {ticker}*\n\n{response_text}")
         return {"status": "success"}
     else:
         error_msg = f"❌ שגיאה ביצירת הניתוח: {last_exception}"
