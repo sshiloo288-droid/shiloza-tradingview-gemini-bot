@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from fastapi import FastAPI, Request
 from google import genai
@@ -11,21 +12,18 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# אתחול לקוח Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# רשימת מודלים נתמכים לניסיון לפי סדר עדיפויות
+# רשימת מודלים עדכניים בלבד
 CANDIDATE_MODELS = [
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-exp",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro"
+    "gemini-3.8-flash",
+    "gemini-3.8-pro",
+    "gemini-2.5-pro",
+    "gemini-1.5-flash-latest"
 ]
 
 def send_telegram_message(text: str):
-    """שליחת הודעה לטלגרם עם מנגנון הגנה לשגיאות עיצוב"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Missing Telegram credentials")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -36,7 +34,6 @@ def send_telegram_message(text: str):
     }
     try:
         res = requests.post(url, json=payload, timeout=10)
-        # אם יש שגיאת תיוג ב-Markdown, נסה לשלוח כטקסט נקי
         if not res.ok:
             payload.pop("parse_mode", None)
             requests.post(url, json=payload, timeout=10)
@@ -80,24 +77,36 @@ async def tradingview_webhook(request: Request):
     response_text = None
     last_exception = None
 
-    # מנגנון ניסיון אוטומטי מול רשימת המודלים עד להצלחה
+    # ניסיון פנייה עם מנגנון Retry קצר לשגיאות עומס זמניות (503)
     for model_name in CANDIDATE_MODELS:
-        try:
-            print(f"Attempting generation with model: {model_name}")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.2
+        for attempt in range(3):  # עד 3 ניסיונות מול אותו מודל במקרה של עומס
+            try:
+                print(f"Attempting model {model_name} (Attempt {attempt + 1})...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.2
+                    )
                 )
-            )
-            if response and response.text:
-                response_text = response.text
+                if response and response.text:
+                    response_text = response.text
+                    break
+            except Exception as e:
+                last_exception = e
+                err_str = str(e)
+                print(f"Failed with {model_name} (Attempt {attempt + 1}): {e}")
+                
+                # במקרה של שגיאת עומס 503, נמתין 1.5 שניות וננסה שוב
+                if "503" in err_str or "UNAVAILABLE" in err_str:
+                    time.sleep(1.5)
+                    continue
+                # בשגיאות 404/אחרות נעבור מיד למודל הבא ברשימה
                 break
-        except Exception as e:
-            print(f"Failed with model {model_name}: {e}")
-            last_exception = e
+
+        if response_text:
+            break
 
     if response_text:
         send_telegram_message(f"📊 *סקירת שוק אוטומטית - {ticker}*\n\n{response_text}")
