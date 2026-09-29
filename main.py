@@ -13,6 +13,13 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# רשימת מודלים נתמכים לניסיון בסדר עדיפויות
+CANDIDATE_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash"
+]
+
 def send_telegram_message(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -20,7 +27,10 @@ def send_telegram_message(text: str):
         "text": text,
         "parse_mode": "Markdown"
     }
-    requests.post(url, json=payload)
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        print(f"Error sending Telegram message: {e}")
 
 @app.get("/")
 def home():
@@ -28,13 +38,16 @@ def home():
 
 @app.post("/webhook")
 async def tradingview_webhook(request: Request):
-    data = await request.json()
-    
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+
     ticker = data.get("ticker", "NQ / ES")
     price = data.get("price", "N/A")
     chart_url = data.get("chart_url", None)
     custom_msg = data.get("message", "ניתוח מתוזמן לפתיחת סשן")
-    
+
     system_instruction = """
     אתה אנליסט מסחר מומחה הפועל לפי מתודולוגיית SMC / ICT.
     בצע ניתוח של הנתונים והגרף והחזר סקירה ממוקדת הכוללת:
@@ -42,25 +55,41 @@ async def tradingview_webhook(request: Request):
     2. זיהוי אזורי עניין (POI / FVG / Liquidity Sweep).
     3. תרחיש עבודה מומלץ לפתיחת הסשן (Judas Swing, יעד BSL/SSL).
     """
-    
+
     prompt = f"נכס: {ticker}\nמחיר נוכחי: {price}\nהודעת התראה: {custom_msg}"
-    
+
     contents = [prompt]
     if chart_url:
         try:
-            img_data = requests.get(chart_url).content
+            img_data = requests.get(chart_url, timeout=10).content
             contents.append(types.Part.from_bytes(data=img_data, mime_type="image/png"))
         except Exception as e:
             print(f"Error fetching image: {e}")
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            temperature=0.2
-        )
-    )
-    
-    send_telegram_message(f"📊 **סקירת שוק אוטומטית - {ticker}**\n\n{response.text}")
-    return {"status": "success"}
+    response_text = None
+    last_exception = None
+
+    # מנגנון ניסיון אוטומטי מול רשימת המודלים
+    for model_name in CANDIDATE_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.2
+                )
+            )
+            response_text = response.text
+            break
+        except Exception as e:
+            print(f"Failed with model {model_name}: {e}")
+            last_exception = e
+
+    if response_text:
+        send_telegram_message(f"📊 **סקירת שוק אוטומטית - {ticker}**\n\n{response_text}")
+        return {"status": "success"}
+    else:
+        error_msg = f"❌ שגיאה ביצירת הניתוח: {last_exception}"
+        send_telegram_message(error_msg)
+        return {"status": "error", "message": str(last_exception)}
