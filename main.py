@@ -13,8 +13,9 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# רשימת מודלים נתמכים לניסיון בסדר עדיפויות
+# רשימת מודלים נתמכים בסדר עדיפויות (כולל המודל העדכני ביותר)
 CANDIDATE_MODELS = [
+    "gemini-3.8-flash",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
     "gemini-1.5-flash"
@@ -69,7 +70,7 @@ async def tradingview_webhook(request: Request):
     response_text = None
     last_exception = None
 
-    # מנגנון ניסיון אוטומטי מול רשימת המודלים
+    # ניסיון אוטומטי מול רשימת המודלים עד להצלחה
     for model_name in CANDIDATE_MODELS:
         try:
             response = client.models.generate_content(
